@@ -1,0 +1,520 @@
+import hashlib
+import io
+import sqlite3
+from datetime import datetime
+import pandas as pd
+import streamlit as st
+
+# --- CONFIGURACIÓN DE LA BASE DE DATOS ---
+DB_NAME = "neumaticos_stock.db"
+
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    # Tabla de Inventario / Lotes por DOT y Ubicación
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS inventario (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            medida TEXT NOT NULL,
+            dot TEXT NOT NULL,
+            anio_dot INTEGER NOT NULL,
+            ubicacion TEXT NOT NULL,
+            cantidad INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    # Tabla de Movimientos (Historial de Auditoría)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS movimientos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT NOT NULL,
+            tipo_movimiento TEXT NOT NULL, -- 'INGRESO' o 'EGRESO'
+            medida TEXT NOT NULL,
+            dot TEXT NOT NULL,
+            ubicacion TEXT NOT NULL,
+            cantidad INTEGER NOT NULL,
+            motivo TEXT NOT NULL,
+            ref_documental TEXT NOT NULL,
+            usuario TEXT NOT NULL
+        )
+    """)
+
+    # Tabla de Usuarios (Autenticación)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            nombre TEXT NOT NULL,
+            rol TEXT NOT NULL
+        )
+    """)
+
+    # Usuarios por defecto si la base está vacía
+    cursor.execute("SELECT COUNT(*) FROM usuarios")
+    if cursor.fetchone()[0] == 0:
+        # Admin: admin / admin123
+        pass_hash = hashlib.sha256("admin123".encode()).hexdigest()
+        cursor.execute(
+            "INSERT INTO usuarios (username, password_hash, nombre, rol) VALUES (?, ?, ?, ?)",
+            ("admin", pass_hash, "Administrador Sistema", "Admin"),
+        )
+        # Operador: operador / 1234
+        op_hash = hashlib.sha256("1234".encode()).hexdigest()
+        cursor.execute(
+            "INSERT INTO usuarios (username, password_hash, nombre, rol) VALUES (?, ?, ?, ?)",
+            ("operador", op_hash, "Operador Depósito", "Operador"),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def obtener_conexion():
+    return sqlite3.connect(DB_NAME)
+
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def verificar_credenciales(username, password):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT username, nombre, rol FROM usuarios WHERE username = ? AND password_hash = ?",
+        (username, hash_password(password)),
+    )
+    user = cursor.fetchone()
+    conn.close()
+    return user
+
+
+# --- INICIALIZACIÓN ---
+init_db()
+st.set_page_config(
+    page_title="Control de Stock - Neumáticos", page_icon="🛞", layout="wide"
+)
+
+# --- CONTROL DE SESIÓN / LOGIN ---
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+    st.session_state.usuario = None
+    st.session_state.nombre_usuario = None
+    st.session_state.rol = None
+
+if not st.session_state.autenticado:
+    st.title("🛞 Sistema de Control de Stock de Neumáticos")
+    st.subheader("Acceso al Sistema")
+
+    with st.form("form_login"):
+        username_input = st.text_input("Usuario")
+        password_input = st.text_input("Contraseña", type="password")
+        btn_login = st.form_submit_button("Iniciar Sesión")
+
+        if btn_login:
+            user_info = verificar_credenciales(username_input, password_input)
+            if user_info:
+                st.session_state.autenticado = True
+                st.session_state.usuario = user_info[0]
+                st.session_state.nombre_usuario = user_info[1]
+                st.session_state.rol = user_info[2]
+                st.success(f"Bienvenido/a {user_info[1]}")
+                st.rerun()
+            else:
+                st.error("Usuario o contraseña incorrectos.")
+    st.stop()
+
+# --- BARRA LATERAL (DATOS DE SESIÓN Y MENÚ) ---
+st.sidebar.markdown(f"👤 **Usuario:** {st.session_state.nombre_usuario}")
+st.sidebar.markdown(f"🔑 **Rol:** {st.session_state.rol}")
+
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state.autenticado = False
+    st.session_state.usuario = None
+    st.session_state.nombre_usuario = None
+    st.session_state.rol = None
+    st.rerun()
+
+st.sidebar.divider()
+
+opciones_menu = [
+    "📦 Visualizar Stock & Alertas",
+    "📥 Registrar Ingreso",
+    "📤 Registrar Egreso",
+    "📋 Historial y Exportación a Excel",
+]
+
+if st.session_state.rol == "Admin":
+    opciones_menu.append("⚙️ Gestión de Usuarios")
+
+opcion = st.sidebar.radio("Menú Principal", opciones_menu)
+
+st.title("🛞 Control de Stock de Neumáticos")
+
+# --- VISTA 1: VISUALIZAR STOCK & ALERTAS ---
+if opcion == "📦 Visualizar Stock & Alertas":
+    st.header("Stock Actual de Neumáticos")
+
+    conn = obtener_conexion()
+    df_stock = pd.read_sql_query(
+        "SELECT id, medida, dot, anio_dot, ubicacion, cantidad FROM inventario WHERE cantidad > 0",
+        conn,
+    )
+    conn.close()
+
+    if df_stock.empty:
+        st.info("No hay neumáticos en stock actualmente.")
+    else:
+        anio_actual = datetime.now().year
+        df_stock["antiguedad_anios"] = anio_actual - df_stock["anio_dot"]
+
+        # Ordenar priorizando neumáticos con mayor antigüedad
+        df_stock = df_stock.sort_values(
+            by=["antiguedad_anios", "medida"], ascending=[False, True]
+        )
+
+        def resaltar_viejos(val):
+            color = "#ffcccc" if val >= 4 else ""
+            return f"background-color: {color}"
+
+        st.subheader("⚠️ Alerta de Rotación por DOT")
+        st.caption(
+            "Los registros marcados en rojo corresponden a neumáticos con 4 o más años de antigüedad."
+        )
+
+        df_mostrar = df_stock.copy()
+        df_mostrar.columns = [
+            "ID",
+            "Medida",
+            "DOT",
+            "Año DOT",
+            "Ubicación",
+            "Cantidad",
+            "Antigüedad (Años)",
+        ]
+
+        st.dataframe(
+            df_mostrar.style.map(
+                resaltar_viejos, subset=["Antigüedad (Años)"]
+            ),
+            use_container_width=True,
+        )
+
+# --- VISTA 2: REGISTRAR INGRESO ---
+elif opcion == "📥 Registrar Ingreso":
+    st.header("Registrar Ingreso de Neumáticos")
+
+    with st.form("form_ingreso", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            medida = st.text_input(
+                "Medida (ej: 205/55 R16)", placeholder="205/55 R16"
+            ).upper()
+            dot = st.text_input(
+                "DOT (4 dígitos, ej: 1222)", max_chars=4, placeholder="1222"
+            )
+            cantidad = st.number_input("Cantidad", min_value=1, step=1)
+
+        with col2:
+            ubicacion = st.text_input(
+                "Ubicación / Estante", placeholder="RACK-A1"
+            ).upper()
+            ref_documental = st.text_input(
+                "Referencia Documental",
+                placeholder="Factura A-0001 / Remito 1234",
+            )
+
+        motivo = "INGRESO POR COMPRA / PROVEEDOR"
+        submitted = st.form_submit_button("Guardar Ingreso")
+
+        if submitted:
+            if (
+                not medida
+                or not dot
+                or len(dot) != 4
+                or not dot.isdigit()
+                or not ubicacion
+                or not ref_documental
+            ):
+                st.error(
+                    "Por favor, complete todos los campos correctamente. El DOT debe tener 4 números (Semana/Año)."
+                )
+            else:
+                anio_dot = 2000 + int(dot[2:])
+                fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                usuario_actual = st.session_state.usuario
+
+                conn = obtener_conexion()
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    "SELECT id, cantidad FROM inventario WHERE medida=? AND dot=? AND ubicacion=?",
+                    (medida, dot, ubicacion),
+                )
+                item = cursor.fetchone()
+
+                if item:
+                    nueva_cant = item[1] + cantidad
+                    cursor.execute(
+                        "UPDATE inventario SET cantidad=? WHERE id=?",
+                        (nueva_cant, item[0]),
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO inventario (medida, dot, anio_dot, ubicacion, cantidad) VALUES (?, ?, ?, ?, ?)",
+                        (medida, dot, anio_dot, ubicacion, cantidad),
+                    )
+
+                cursor.execute(
+                    """
+                    INSERT INTO movimientos (fecha, tipo_movimiento, medida, dot, ubicacion, cantidad, motivo, ref_documental, usuario)
+                    VALUES (?, 'INGRESO', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                    (
+                        fecha_actual,
+                        medida,
+                        dot,
+                        ubicacion,
+                        cantidad,
+                        motivo,
+                        ref_documental,
+                        usuario_actual,
+                    ),
+                )
+
+                conn.commit()
+                conn.close()
+                st.success(
+                    f"✅ Se registraron {cantidad} unidad(es) correctamente por el usuario '{usuario_actual}'."
+                )
+
+# --- VISTA 3: REGISTRAR EGRESO ---
+elif opcion == "📤 Registrar Egreso":
+    st.header("Registrar Egreso de Neumáticos")
+
+    conn = obtener_conexion()
+    df_disponible = pd.read_sql_query(
+        "SELECT id, medida, dot, ubicacion, cantidad FROM inventario WHERE cantidad > 0",
+        conn,
+    )
+    conn.close()
+
+    if df_disponible.empty:
+        st.warning("No hay neumáticos disponibles en el inventario para egresar.")
+    else:
+        df_disponible["item_label"] = df_disponible.apply(
+            lambda x: f"ID: {x['id']} | Medida: {x['medida']} | DOT: {x['dot']} | Ubicación: {x['ubicacion']} | Disponibles: {x['cantidad']}",
+            axis=1,
+        )
+
+        item_seleccionado = st.selectbox(
+            "Seleccione el neumático a egresar:",
+            options=df_disponible["item_label"].tolist(),
+        )
+
+        id_sel = int(item_seleccionado.split("|")[0].replace("ID:", "").strip())
+        row_sel = df_disponible[df_disponible["id"] == id_sel].iloc[0]
+
+        with st.form("form_egreso", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                cantidad_egreso = st.number_input(
+                    "Cantidad a retirar",
+                    min_value=1,
+                    max_value=int(row_sel["cantidad"]),
+                    step=1,
+                )
+                motivo_egreso = st.selectbox(
+                    "Motivo de Egreso",
+                    [
+                        "VENTA",
+                        "GARANTÍA / DEFECTO",
+                        "AJUSTE DE STOCK / PÉRDIDA",
+                        "USO INTERNO / MUESTRA",
+                    ],
+                )
+
+            with col2:
+                ref_documental = st.text_input(
+                    "Referencia Documental",
+                    placeholder="Factura B-0052 / Reclamo Gar. #991",
+                )
+
+            submitted_egreso = st.form_submit_button("Confirmar Egreso")
+
+            if submitted_egreso:
+                if not ref_documental:
+                    st.error(
+                        "Debe ingresar la Referencia Documental para poder registrar la salida."
+                    )
+                else:
+                    fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    usuario_actual = st.session_state.usuario
+
+                    conn = obtener_conexion()
+                    cursor = conn.cursor()
+
+                    nueva_cantidad = row_sel["cantidad"] - cantidad_egreso
+                    cursor.execute(
+                        "UPDATE inventario SET cantidad=? WHERE id=?",
+                        (nueva_cantidad, id_sel),
+                    )
+
+                    cursor.execute(
+                        """
+                        INSERT INTO movimientos (fecha, tipo_movimiento, medida, dot, ubicacion, cantidad, motivo, ref_documental, usuario)
+                        VALUES (?, 'EGRESO', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            fecha_actual,
+                            row_sel["medida"],
+                            row_sel["dot"],
+                            row_sel["ubicacion"],
+                            cantidad_egreso,
+                            motivo_egreso,
+                            ref_documental,
+                            usuario_actual,
+                        ),
+                    )
+
+                    conn.commit()
+                    conn.close()
+                    st.success("✅ Egreso registrado exitosamente.")
+                    st.rerun()
+
+# --- VISTA 4: HISTORIAL & EXPORTACIÓN A EXCEL ---
+elif opcion == "📋 Historial y Exportación a Excel":
+    st.header("Historial de Movimientos y Exportación")
+
+    conn = obtener_conexion()
+    df_mov = pd.read_sql_query(
+        "SELECT id, fecha, tipo_movimiento, medida, dot, ubicacion, cantidad, motivo, ref_documental, usuario FROM movimientos ORDER BY id DESC",
+        conn,
+    )
+    df_stock_exp = pd.read_sql_query(
+        "SELECT id, medida, dot, anio_dot, ubicacion, cantidad FROM inventario WHERE cantidad > 0",
+        conn,
+    )
+    conn.close()
+
+    st.subheader("📊 Exportación a Excel")
+    if not df_mov.empty or not df_stock_exp.empty:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            if not df_stock_exp.empty:
+                anio_actual = datetime.now().year
+                df_stock_exp["antiguedad_anios"] = (
+                    anio_actual - df_stock_exp["anio_dot"]
+                )
+                df_stock_exp.columns = [
+                    "ID",
+                    "Medida",
+                    "DOT",
+                    "Año DOT",
+                    "Ubicación",
+                    "Cantidad",
+                    "Antigüedad (Años)",
+                ]
+                df_stock_exp.to_excel(
+                    writer, sheet_name="Stock Actual", index=False
+                )
+
+            if not df_mov.empty:
+                df_mov_exp = df_mov.copy()
+                df_mov_exp.columns = [
+                    "ID",
+                    "Fecha/Hora",
+                    "Tipo Movimiento",
+                    "Medida",
+                    "DOT",
+                    "Ubicación",
+                    "Cantidad",
+                    "Motivo",
+                    "Ref. Documental",
+                    "Usuario",
+                ]
+                df_mov_exp.to_excel(
+                    writer, sheet_name="Historial Movimientos", index=False
+                )
+
+        st.download_button(
+            label="📥 Descargar Reporte Completo en Excel (.xlsx)",
+            data=output.getvalue(),
+            file_name=f"reporte_neumaticos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    st.divider()
+    st.subheader("Tabla de Auditoría de Movimientos")
+    if df_mov.empty:
+        st.info("Aún no hay movimientos registrados.")
+    else:
+        df_mov.columns = [
+            "ID",
+            "Fecha/Hora",
+            "Tipo",
+            "Medida",
+            "DOT",
+            "Ubicación",
+            "Cantidad",
+            "Motivo",
+            "Ref. Documental",
+            "Usuario",
+        ]
+        st.dataframe(df_mov, use_container_width=True)
+
+# --- VISTA 5: GESTIÓN DE USUARIOS (SÓLO ADMIN) ---
+elif opcion == "⚙️ Gestión de Usuarios":
+    st.header("⚙️ Gestión de Usuarios del Sistema")
+
+    st.subheader("Crear Nuevo Usuario")
+    with st.form("form_nuevo_usuario", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            nuevo_user = st.text_input("Nombre de Usuario (Login)")
+            nuevo_nombre = st.text_input("Nombre Completo")
+        with col2:
+            nueva_pass = st.text_input("Contraseña", type="password")
+            nuevo_rol = st.selectbox("Rol", ["Operador", "Admin"])
+
+        btn_crear_user = st.form_submit_button("Guardar Usuario")
+        if btn_crear_user:
+            if not nuevo_user or not nuevo_nombre or not nueva_pass:
+                st.error("Todos los campos son obligatorios.")
+            else:
+                conn = obtener_conexion()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT username FROM usuarios WHERE username = ?",
+                    (nuevo_user,),
+                )
+                if cursor.fetchone():
+                    st.error("El nombre de usuario ya existe.")
+                else:
+                    cursor.execute(
+                        "INSERT INTO usuarios (username, password_hash, nombre, rol) VALUES (?, ?, ?, ?)",
+                        (
+                            nuevo_user,
+                            hash_password(nueva_pass),
+                            nuevo_nombre,
+                            nuevo_rol,
+                        ),
+                    )
+                    conn.commit()
+                    st.success(
+                        f"✅ Usuario '{nuevo_user}' creado exitosamente."
+                    )
+                conn.close()
+
+    st.divider()
+    st.subheader("Usuarios Registrados")
+    conn = obtener_conexion()
+    df_users = pd.read_sql_query(
+        "SELECT username, nombre, rol FROM usuarios", conn
+    )
+    conn.close()
+    st.dataframe(df_users, use_container_width=True)
