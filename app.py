@@ -51,16 +51,14 @@ def init_db():
         )
     """)
 
-    # Usuarios iniciales por defecto si la base está vacía
+    # Usuarios iniciales por defecto
     cursor.execute("SELECT COUNT(*) FROM usuarios")
     if cursor.fetchone()[0] == 0:
-        # Admin: admin / admin123
         pass_hash = hashlib.sha256("admin123".encode()).hexdigest()
         cursor.execute(
             "INSERT INTO usuarios (username, password_hash, nombre, rol) VALUES (?, ?, ?, ?)",
             ("admin", pass_hash, "Administrador Sistema", "Admin"),
         )
-        # Operador: operador / 1234
         op_hash = hashlib.sha256("1234".encode()).hexdigest()
         cursor.execute(
             "INSERT INTO usuarios (username, password_hash, nombre, rol) VALUES (?, ?, ?, ?)",
@@ -126,7 +124,7 @@ if not st.session_state.autenticado:
                 st.error("Usuario o contraseña incorrectos.")
     st.stop()
 
-# --- BARRA LATERAL (DATOS DE SESIÓN Y MENÚ POR ROL) ---
+# --- BARRA LATERAL (DATOS DE SESIÓN Y MENÚ) ---
 st.sidebar.markdown(f"👤 **Usuario:** {st.session_state.nombre_usuario}")
 st.sidebar.markdown(f"🔑 **Rol:** {st.session_state.rol}")
 
@@ -145,14 +143,18 @@ if st.session_state.rol == "Visualizador":
 elif st.session_state.rol == "Operador":
     opciones_menu = [
         "📦 Visualizar Stock & Alertas",
+        "✏️ Ajustar DOT",
         "📥 Registrar Ingreso",
+        "📂 Carga Masiva (Excel)",
         "📤 Registrar Egreso",
         "📋 Historial y Exportación a Excel",
     ]
 else:  # Admin
     opciones_menu = [
         "📦 Visualizar Stock & Alertas",
+        "✏️ Ajustar DOT",
         "📥 Registrar Ingreso",
+        "📂 Carga Masiva (Excel)",
         "📤 Registrar Egreso",
         "📋 Historial y Exportación a Excel",
         "⚙️ Gestión de Usuarios",
@@ -162,13 +164,13 @@ opcion = st.sidebar.radio("Menú Principal", opciones_menu)
 
 st.title("🛞 Control de Stock de Neumáticos")
 
-# --- VISTA 1: VISUALIZAR STOCK & ALERTAS ---
+# --- VISTA 1: VISUALIZAR STOCK & ALERTAS (EDICIÓN EN PANTALLA) ---
 if opcion == "📦 Visualizar Stock & Alertas":
     st.header("Stock Actual de Neumáticos")
 
     conn = obtener_conexion()
     df_stock = pd.read_sql_query(
-        "SELECT id, medida, dot, anio_dot, ubicacion, cantidad FROM inventario WHERE cantidad > 0",
+        "SELECT id, medida, dot, ubicacion, cantidad FROM inventario WHERE cantidad > 0",
         conn,
     )
     conn.close()
@@ -176,44 +178,204 @@ if opcion == "📦 Visualizar Stock & Alertas":
     if df_stock.empty:
         st.info("No hay neumáticos en stock actualmente.")
     else:
+        # Calcular antigüedad
         anio_actual = datetime.now().year
+        df_stock["anio_dot"] = df_stock["dot"].apply(
+            lambda x: 2000 + int(str(x)[2:])
+            if (len(str(x)) == 4 and str(x).isdigit())
+            else anio_actual
+        )
         df_stock["antiguedad_anios"] = anio_actual - df_stock["anio_dot"]
 
-        # Ordenar priorizando neumáticos con mayor antigüedad
         df_stock = df_stock.sort_values(
             by=["antiguedad_anios", "medida"], ascending=[False, True]
         )
 
-        def resaltar_viejos(val):
-            color = "#ffcccc" if val >= 4 else ""
-            return f"background-color: {color}"
-
-        st.subheader("⚠️ Alerta de Rotación por DOT")
+        st.subheader("⚠️ Alerta de Rotación y Edición por DOT")
         st.caption(
-            "Los registros marcados en rojo corresponden a neumáticos con 4 o más años de antigüedad."
+            "Podés hacer doble clic directamente sobre las celdas de **DOT**, **Ubicación** o **Cantidad** para modificar los valores."
         )
 
-        df_mostrar = df_stock.copy()
+        df_mostrar = df_stock[
+            ["id", "medida", "dot", "ubicacion", "cantidad", "antiguedad_anios"]
+        ].copy()
         df_mostrar.columns = [
             "ID",
             "Medida",
             "DOT",
-            "Año DOT",
             "Ubicación",
             "Cantidad",
             "Antigüedad (Años)",
         ]
 
-        st.dataframe(
-            df_mostrar.style.map(
-                resaltar_viejos, subset=["Antigüedad (Años)"]
-            ),
+        # Tabla editable interactiva
+        df_editado = st.data_editor(
+            df_mostrar,
+            disabled=[
+                "ID",
+                "Medida",
+                "Antigüedad (Años)",
+            ],  # Solo DOT, Ubicación y Cantidad son editables
             use_container_width=True,
+            num_rows="fixed",
+            key="editor_stock",
         )
 
-# --- VISTA 2: REGISTRAR INGRESO ---
+        if st.button("💾 Guardar Cambios Editados en Pantalla"):
+            conn = obtener_conexion()
+            cursor = conn.cursor()
+            cambios_realizados = 0
+
+            for index, row in df_editado.iterrows():
+                id_item = int(row["ID"])
+                nuevo_dot = str(row["DOT"]).strip().zfill(4)
+                nueva_ubicacion = str(row["Ubicación"]).strip().upper()
+                nueva_cantidad = int(row["Cantidad"])
+
+                # Validar DOT de 4 números
+                if len(nuevo_dot) == 4 and nuevo_dot.isdigit():
+                    nuevo_anio_dot = 2000 + int(nuevo_dot[2:])
+                    cursor.execute(
+                        """
+                        UPDATE inventario 
+                        SET dot=?, anio_dot=?, ubicacion=?, cantidad=? 
+                        WHERE id=?
+                    """,
+                        (
+                            nuevo_dot,
+                            nuevo_anio_dot,
+                            nueva_ubicacion,
+                            nueva_cantidad,
+                            id_item,
+                        ),
+                    )
+                    cambios_realizados += 1
+
+            conn.commit()
+            conn.close()
+            st.success(
+                f"✅ Se actualizaron {cambios_realizados} registros en la base de datos."
+            )
+            st.rerun()
+
+# --- VISTA 2: AJUSTAR DOT DE UN ARTÍCULO ---
+elif opcion == "✏️ Ajustar DOT":
+    st.header("✏️ Ajustar / Reasignar DOT de un Artículo")
+    st.write(
+        "Buscá un neumático en stock para modificar su DOT, corregir la cantidad o reubicarlo."
+    )
+
+    conn = obtener_conexion()
+    df_disponible = pd.read_sql_query(
+        "SELECT id, medida, dot, ubicacion, cantidad FROM inventario WHERE cantidad > 0",
+        conn,
+    )
+    conn.close()
+
+    if df_disponible.empty:
+        st.warning("No hay neumáticos registrados en el inventario.")
+    else:
+        df_disponible["item_label"] = df_disponible.apply(
+            lambda x: f"ID: {x['id']} | Medida: {x['medida']} | DOT Actual: {x['dot']} | Ubicación: {x['ubicacion']} | Cantidad: {x['cantidad']}",
+            axis=1,
+        )
+
+        item_seleccionado = st.selectbox(
+            "Seleccione el neumático a ajustar:",
+            options=df_disponible["item_label"].tolist(),
+        )
+
+        id_sel = int(item_seleccionado.split("|")[0].replace("ID:", "").strip())
+        row_sel = df_disponible[df_disponible["id"] == id_sel].iloc[0]
+
+        with st.form("form_ajuste_dot"):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.text_input(
+                    "Medida (No modificable)",
+                    value=row_sel["medida"],
+                    disabled=True,
+                )
+                nuevo_dot = st.text_input(
+                    "Nuevo DOT (4 dígitos, ej: 1523)",
+                    value=str(row_sel["dot"]),
+                    max_chars=4,
+                )
+                nueva_cantidad = st.number_input(
+                    "Cantidad", min_value=1, value=int(row_sel["cantidad"])
+                )
+
+            with col2:
+                nueva_ubicacion = st.text_input(
+                    "Ubicación", value=str(row_sel["ubicacion"])
+                ).upper()
+                ref_doc = st.text_input(
+                    "Motivo / Documento de Ajuste",
+                    placeholder="Ajuste Físico DOT / Corrección Inventario",
+                )
+
+            btn_guardar_ajuste = st.form_submit_button("Aplicar Ajuste de DOT")
+
+            if btn_guardar_ajuste:
+                if (
+                    not nuevo_dot
+                    or len(nuevo_dot) != 4
+                    or not nuevo_dot.isdigit()
+                    or not ref_doc
+                ):
+                    st.error(
+                        "Por favor complete el DOT correctamente (4 números) y especifique el motivo del ajuste."
+                    )
+                else:
+                    nuevo_anio_dot = 2000 + int(nuevo_dot[2:])
+                    fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    usuario_actual = st.session_state.usuario
+
+                    conn = obtener_conexion()
+                    cursor = conn.cursor()
+
+                    # Actualizar Inventario
+                    cursor.execute(
+                        """
+                        UPDATE inventario 
+                        SET dot=?, anio_dot=?, ubicacion=?, cantidad=? 
+                        WHERE id=?
+                    """,
+                        (
+                            nuevo_dot,
+                            nuevo_anio_dot,
+                            nueva_ubicacion,
+                            nueva_cantidad,
+                            id_sel,
+                        ),
+                    )
+
+                    # Registrar Movimiento de Auditoría
+                    cursor.execute(
+                        """
+                        INSERT INTO movimientos (fecha, tipo_movimiento, medida, dot, ubicacion, cantidad, motivo, ref_documental, usuario)
+                        VALUES (?, 'AJUSTE DOT', ?, ?, ?, ?, 'Cambio de DOT / Corrección', ?, ?)
+                    """,
+                        (
+                            fecha_actual,
+                            row_sel["medida"],
+                            nuevo_dot,
+                            nueva_ubicacion,
+                            nueva_cantidad,
+                            ref_doc,
+                            usuario_actual,
+                        ),
+                    )
+
+                    conn.commit()
+                    conn.close()
+                    st.success("✅ DOT y datos actualizados correctamente.")
+                    st.rerun()
+
+# --- VISTA 3: REGISTRAR INGRESO INDIVIDUAL ---
 elif opcion == "📥 Registrar Ingreso":
-    st.header("Registrar Ingreso de Neumáticos")
+    st.header("Registrar Ingreso Individual")
 
     with st.form("form_ingreso", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -258,7 +420,7 @@ elif opcion == "📥 Registrar Ingreso":
                 or not ref_documental
             ):
                 st.error(
-                    "Por favor, complete todos los campos correctamente. El DOT debe tener 4 números (Semana/Año)."
+                    "Por favor, complete todos los campos correctamente. El DOT debe tener 4 números."
                 )
             else:
                 anio_dot = 2000 + int(dot[2:])
@@ -309,7 +471,145 @@ elif opcion == "📥 Registrar Ingreso":
                     f"✅ Se registraron {cantidad} unidad(es) correctamente por el usuario '{usuario_actual}'."
                 )
 
-# --- VISTA 3: REGISTRAR EGRESO ---
+# --- VISTA 4: CARGA MASIVA DE STOCK (EXCEL) ---
+elif opcion == "📂 Carga Masiva (Excel)":
+    st.header("📂 Carga Masiva de Neumáticos desde Excel")
+    st.write(
+        "Subí un archivo `.xlsx` o `.csv` para cargar múltiples cubiertas en simultáneo."
+    )
+
+    ejemplo_df = pd.DataFrame(
+        [
+            {
+                "medida": "205/55 R16",
+                "dot": "1222",
+                "ubicacion": "RACK-A1",
+                "cantidad": 10,
+                "ref_documental": "Carga Inicial / Inventario 2026",
+            },
+            {
+                "medida": "175/65 R14",
+                "dot": "0819",
+                "ubicacion": "ESTANTE-B2",
+                "cantidad": 4,
+                "ref_documental": "Carga Inicial / Inventario 2026",
+            },
+        ]
+    )
+
+    output_plantilla = io.BytesIO()
+    with pd.ExcelWriter(output_plantilla, engine="openpyxl") as writer:
+        ejemplo_df.to_excel(writer, sheet_name="Plantilla", index=False)
+
+    st.download_button(
+        label="📥 Descargar Plantilla de Ejemplo en Excel",
+        data=output_plantilla.getvalue(),
+        file_name="plantilla_carga_masiva_neumaticos.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    st.divider()
+
+    archivo_subido = st.file_uploader(
+        "Seleccioná el archivo Excel o CSV para importar:",
+        type=["xlsx", "csv"],
+    )
+
+    if archivo_subido is not None:
+        try:
+            if archivo_subido.name.endswith(".csv"):
+                df_cargado = pd.read_csv(archivo_subido, dtype={"dot": str})
+            else:
+                df_cargado = pd.read_excel(archivo_subido, dtype={"dot": str})
+
+            df_cargado.columns = [
+                str(c).strip().lower() for c in df_cargado.columns
+            ]
+
+            columnas_requeridas = [
+                "medida",
+                "dot",
+                "ubicacion",
+                "cantidad",
+                "ref_documental",
+            ]
+            columnas_faltantes = [
+                col
+                for col in columnas_requeridas
+                if col not in df_cargado.columns
+            ]
+
+            if columnas_faltantes:
+                st.error(
+                    f"El archivo no contiene las columnas requeridas: {', '.join(columnas_faltantes)}"
+                )
+            else:
+                st.subheader("Vista previa de los datos a importar:")
+                st.dataframe(df_cargado, use_container_width=True)
+
+                if st.button("🚀 Confirmar e Importar Carga Masiva"):
+                    conn = obtener_conexion()
+                    cursor = conn.cursor()
+                    fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    usuario_actual = st.session_state.usuario
+
+                    registros_procesados = 0
+
+                    for _, row in df_cargado.iterrows():
+                        medida_i = str(row["medida"]).strip().upper()
+                        dot_i = str(row["dot"]).strip().zfill(4)
+                        ubicacion_i = str(row["ubicacion"]).strip().upper()
+                        cant_i = int(row["cantidad"])
+                        ref_doc_i = str(row["ref_documental"]).strip()
+                        anio_dot_i = 2000 + int(dot_i[2:])
+
+                        cursor.execute(
+                            "SELECT id, cantidad FROM inventario WHERE medida=? AND dot=? AND ubicacion=?",
+                            (medida_i, dot_i, ubicacion_i),
+                        )
+                        item = cursor.fetchone()
+
+                        if item:
+                            nueva_cant = item[1] + cant_i
+                            cursor.execute(
+                                "UPDATE inventario SET cantidad=? WHERE id=?",
+                                (nueva_cant, item[0]),
+                            )
+                        else:
+                            cursor.execute(
+                                "INSERT INTO inventario (medida, dot, anio_dot, ubicacion, cantidad) VALUES (?, ?, ?, ?, ?)",
+                                (medida_i, dot_i, anio_dot_i, ubicacion_i, cant_i),
+                            )
+
+                        cursor.execute(
+                            """
+                            INSERT INTO movimientos (fecha, tipo_movimiento, medida, dot, ubicacion, cantidad, motivo, ref_documental, usuario)
+                            VALUES (?, 'INGRESO', ?, ?, ?, ?, 'Carga Masiva / Inicial', ?, ?)
+                        """,
+                            (
+                                fecha_actual,
+                                medida_i,
+                                dot_i,
+                                ubicacion_i,
+                                cant_i,
+                                ref_doc_i,
+                                usuario_actual,
+                            ),
+                        )
+                        registros_procesados += 1
+
+                    conn.commit()
+                    conn.close()
+                    st.success(
+                        f"🎉 ¡Éxito! Se importaron {registros_procesados} líneas correctamente."
+                    )
+
+        except Exception as e:
+            st.error(
+                f"Error al procesar el archivo. Detalle del problema: {e}"
+            )
+
+# --- VISTA 5: REGISTRAR EGRESO ---
 elif opcion == "📤 Registrar Egreso":
     st.header("Registrar Egreso de Neumáticos")
 
@@ -404,7 +704,7 @@ elif opcion == "📤 Registrar Egreso":
                     st.success("✅ Egreso registrado exitosamente.")
                     st.rerun()
 
-# --- VISTA 4: HISTORIAL & EXPORTACIÓN A EXCEL ---
+# --- VISTA 6: HISTORIAL & EXPORTACIÓN A EXCEL ---
 elif opcion == "📋 Historial y Exportación a Excel":
     st.header("Historial de Movimientos y Exportación")
 
@@ -485,7 +785,7 @@ elif opcion == "📋 Historial y Exportación a Excel":
         ]
         st.dataframe(df_mov, use_container_width=True)
 
-# --- VISTA 5: GESTIÓN DE USUARIOS (SÓLO ADMIN) ---
+# --- VISTA 7: GESTIÓN DE USUARIOS (SÓLO ADMIN) ---
 elif opcion == "⚙️ Gestión de Usuarios":
     st.header("⚙️ Gestión de Usuarios del Sistema")
 
