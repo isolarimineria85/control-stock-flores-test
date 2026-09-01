@@ -159,7 +159,7 @@ opcion = st.sidebar.radio("Menú Principal", opciones_menu)
 
 st.title("🛞 Control de Stock de Neumáticos")
 
-# --- VISTA 1: VISUALIZAR STOCK & ALERTAS ---
+# --- VISTA 1: VISUALIZAR STOCK & ALERTAS (SÓLO EDICIÓN DE DOT) ---
 if opcion == "📦 Visualizar Stock & Alertas":
     st.header("Stock Actual de Neumáticos")
 
@@ -185,9 +185,9 @@ if opcion == "📦 Visualizar Stock & Alertas":
             by=["antiguedad_anios", "medida"], ascending=[False, True]
         )
 
-        st.subheader("⚠️ Alerta de Rotación y Edición por DOT")
+        st.subheader("⚠️ Alerta de Rotación y Edición de DOT")
         st.caption(
-            "Podés hacer doble clic directamente sobre las celdas de **DOT**, **Ubicación** o **Cantidad** para modificar los valores."
+            "Podés hacer doble clic sobre las celdas de la columna **DOT** para corregir el código. Las cantidades y ubicaciones están protegidas."
         )
 
         df_mostrar = df_stock[
@@ -202,15 +202,22 @@ if opcion == "📦 Visualizar Stock & Alertas":
             "Antigüedad (Años)",
         ]
 
+        # SE BLOQUEA TODO SALVO LA COLUMNA "DOT"
         df_editado = st.data_editor(
             df_mostrar,
-            disabled=["ID", "Medida", "Antigüedad (Años)"],
+            disabled=[
+                "ID",
+                "Medida",
+                "Ubicación",
+                "Cantidad",
+                "Antigüedad (Años)",
+            ],
             use_container_width=True,
             num_rows="fixed",
             key="editor_stock",
         )
 
-        if st.button("💾 Guardar Cambios Editados en Pantalla"):
+        if st.button("💾 Guardar Cambios de DOT en Pantalla"):
             conn = obtener_conexion()
             cursor = conn.cursor()
             cambios_realizados = 0
@@ -218,35 +225,27 @@ if opcion == "📦 Visualizar Stock & Alertas":
             for index, row in df_editado.iterrows():
                 id_item = int(row["ID"])
                 nuevo_dot = str(row["DOT"]).strip().zfill(4)
-                nueva_ubicacion = str(row["Ubicación"]).strip().upper()
-                nueva_cantidad = int(row["Cantidad"])
 
                 if len(nuevo_dot) == 4 and nuevo_dot.isdigit():
                     nuevo_anio_dot = 2000 + int(nuevo_dot[2:])
                     cursor.execute(
                         """
                         UPDATE inventario 
-                        SET dot=?, anio_dot=?, ubicacion=?, cantidad=? 
+                        SET dot=?, anio_dot=? 
                         WHERE id=?
                     """,
-                        (
-                            nuevo_dot,
-                            nuevo_anio_dot,
-                            nueva_ubicacion,
-                            nueva_cantidad,
-                            id_item,
-                        ),
+                        (nuevo_dot, nuevo_anio_dot, id_item),
                     )
                     cambios_realizados += 1
 
             conn.commit()
             conn.close()
             st.success(
-                f"✅ Se actualizaron {cambios_realizados} registros en la base de datos."
+                f"✅ Se actualizaron los códigos DOT correctamente ({cambios_realizados} registros)."
             )
             st.rerun()
 
-# --- VISTA 2: AJUSTAR DOT DE UN ARTÍCULO (FRACCIONAMIENTO CORRECTO) ---
+# --- VISTA 2: AJUSTAR DOT DE UN ARTÍCULO ---
 elif opcion == "✏️ Ajustar DOT":
     st.header("✏️ Ajustar / Reasignar DOT de un Lote")
     st.write(
