@@ -13,7 +13,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # Tabla de Inventario / Lotes por DOT y Ubicación
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS inventario (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,7 +24,6 @@ def init_db():
         )
     """)
 
-    # Tabla de Movimientos (Historial de Auditoría)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS movimientos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +39,6 @@ def init_db():
         )
     """)
 
-    # Tabla de Usuarios (Autenticación)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
             username TEXT PRIMARY KEY,
@@ -51,7 +48,6 @@ def init_db():
         )
     """)
 
-    # Usuarios iniciales por defecto
     cursor.execute("SELECT COUNT(*) FROM usuarios")
     if cursor.fetchone()[0] == 0:
         pass_hash = hashlib.sha256("admin123".encode()).hexdigest()
@@ -124,7 +120,7 @@ if not st.session_state.autenticado:
                 st.error("Usuario o contraseña incorrectos.")
     st.stop()
 
-# --- BARRA LATERAL (DATOS DE SESIÓN Y MENÚ) ---
+# --- BARRA LATERAL ---
 st.sidebar.markdown(f"👤 **Usuario:** {st.session_state.nombre_usuario}")
 st.sidebar.markdown(f"🔑 **Rol:** {st.session_state.rol}")
 
@@ -137,7 +133,6 @@ if st.sidebar.button("Cerrar Sesión"):
 
 st.sidebar.divider()
 
-# Permisos según el Rol
 if st.session_state.rol == "Visualizador":
     opciones_menu = ["📦 Visualizar Stock & Alertas"]
 elif st.session_state.rol == "Operador":
@@ -164,7 +159,7 @@ opcion = st.sidebar.radio("Menú Principal", opciones_menu)
 
 st.title("🛞 Control de Stock de Neumáticos")
 
-# --- VISTA 1: VISUALIZAR STOCK & ALERTAS (EDICIÓN EN PANTALLA) ---
+# --- VISTA 1: VISUALIZAR STOCK & ALERTAS ---
 if opcion == "📦 Visualizar Stock & Alertas":
     st.header("Stock Actual de Neumáticos")
 
@@ -178,7 +173,6 @@ if opcion == "📦 Visualizar Stock & Alertas":
     if df_stock.empty:
         st.info("No hay neumáticos en stock actualmente.")
     else:
-        # Calcular antigüedad
         anio_actual = datetime.now().year
         df_stock["anio_dot"] = df_stock["dot"].apply(
             lambda x: 2000 + int(str(x)[2:])
@@ -208,14 +202,9 @@ if opcion == "📦 Visualizar Stock & Alertas":
             "Antigüedad (Años)",
         ]
 
-        # Tabla editable interactiva
         df_editado = st.data_editor(
             df_mostrar,
-            disabled=[
-                "ID",
-                "Medida",
-                "Antigüedad (Años)",
-            ],  # Solo DOT, Ubicación y Cantidad son editables
+            disabled=["ID", "Medida", "Antigüedad (Años)"],
             use_container_width=True,
             num_rows="fixed",
             key="editor_stock",
@@ -232,7 +221,6 @@ if opcion == "📦 Visualizar Stock & Alertas":
                 nueva_ubicacion = str(row["Ubicación"]).strip().upper()
                 nueva_cantidad = int(row["Cantidad"])
 
-                # Validar DOT de 4 números
                 if len(nuevo_dot) == 4 and nuevo_dot.isdigit():
                     nuevo_anio_dot = 2000 + int(nuevo_dot[2:])
                     cursor.execute(
@@ -258,11 +246,11 @@ if opcion == "📦 Visualizar Stock & Alertas":
             )
             st.rerun()
 
-# --- VISTA 2: AJUSTAR DOT DE UN ARTÍCULO ---
+# --- VISTA 2: AJUSTAR DOT DE UN ARTÍCULO (FRACCIONAMIENTO CORRECTO) ---
 elif opcion == "✏️ Ajustar DOT":
-    st.header("✏️ Ajustar / Reasignar DOT de un Artículo")
+    st.header("✏️ Ajustar / Reasignar DOT de un Lote")
     st.write(
-        "Buscá un neumático en stock para modificar su DOT, corregir la cantidad o reubicarlo."
+        "Permite corregir el DOT de una parte (o la totalidad) de las unidades de un lote."
     )
 
     conn = obtener_conexion()
@@ -276,46 +264,51 @@ elif opcion == "✏️ Ajustar DOT":
         st.warning("No hay neumáticos registrados en el inventario.")
     else:
         df_disponible["item_label"] = df_disponible.apply(
-            lambda x: f"ID: {x['id']} | Medida: {x['medida']} | DOT Actual: {x['dot']} | Ubicación: {x['ubicacion']} | Cantidad: {x['cantidad']}",
+            lambda x: f"ID: {x['id']} | Medida: {x['medida']} | DOT Actual: {x['dot']} | Ubicación: {x['ubicacion']} | Disponibles: {x['cantidad']}",
             axis=1,
         )
 
         item_seleccionado = st.selectbox(
-            "Seleccione el neumático a ajustar:",
+            "Seleccione el lote a reasignar:",
             options=df_disponible["item_label"].tolist(),
         )
 
         id_sel = int(item_seleccionado.split("|")[0].replace("ID:", "").strip())
         row_sel = df_disponible[df_disponible["id"] == id_sel].iloc[0]
 
-        with st.form("form_ajuste_dot"):
+        cant_max = int(row_sel["cantidad"])
+
+        with st.form("form_ajuste_dot", clear_on_submit=True):
             col1, col2 = st.columns(2)
 
             with col1:
                 st.text_input(
-                    "Medida (No modificable)",
-                    value=row_sel["medida"],
-                    disabled=True,
+                    "Medida", value=row_sel["medida"], disabled=True
                 )
-                nuevo_dot = st.text_input(
-                    "Nuevo DOT (4 dígitos, ej: 1523)",
-                    value=str(row_sel["dot"]),
-                    max_chars=4,
+                st.text_input(
+                    "DOT Actual", value=str(row_sel["dot"]), disabled=True
                 )
-                nueva_cantidad = st.number_input(
-                    "Cantidad", min_value=1, value=int(row_sel["cantidad"])
+                cant_a_reasignar = st.number_input(
+                    f"Cantidad a reasignar (Máx: {cant_max})",
+                    min_value=1,
+                    max_value=cant_max,
+                    value=1,
+                    step=1,
                 )
 
             with col2:
+                nuevo_dot = st.text_input(
+                    "Nuevo DOT (4 dígitos, ej: 1523)", max_chars=4
+                )
                 nueva_ubicacion = st.text_input(
-                    "Ubicación", value=str(row_sel["ubicacion"])
+                    "Ubicación Destino", value=str(row_sel["ubicacion"])
                 ).upper()
                 ref_doc = st.text_input(
                     "Motivo / Documento de Ajuste",
-                    placeholder="Ajuste Físico DOT / Corrección Inventario",
+                    placeholder="Corrección visual de DOT / Revisión física",
                 )
 
-            btn_guardar_ajuste = st.form_submit_button("Aplicar Ajuste de DOT")
+            btn_guardar_ajuste = st.form_submit_button("Aplicar Reasignación")
 
             if btn_guardar_ajuste:
                 if (
@@ -325,44 +318,76 @@ elif opcion == "✏️ Ajustar DOT":
                     or not ref_doc
                 ):
                     st.error(
-                        "Por favor complete el DOT correctamente (4 números) y especifique el motivo del ajuste."
+                        "Por favor complete el nuevo DOT (4 números) y el motivo del ajuste."
+                    )
+                elif (
+                    nuevo_dot == str(row_sel["dot"])
+                    and nueva_ubicacion == str(row_sel["ubicacion"])
+                ):
+                    st.warning(
+                        "El nuevo DOT y la ubicación son idénticos a los actuales. No hay cambios que realizar."
                     )
                 else:
                     nuevo_anio_dot = 2000 + int(nuevo_dot[2:])
                     fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     usuario_actual = st.session_state.usuario
+                    medida_sel = row_sel["medida"]
 
                     conn = obtener_conexion()
                     cursor = conn.cursor()
 
-                    # Actualizar Inventario
-                    cursor.execute(
-                        """
-                        UPDATE inventario 
-                        SET dot=?, anio_dot=?, ubicacion=?, cantidad=? 
-                        WHERE id=?
-                    """,
-                        (
-                            nuevo_dot,
-                            nuevo_anio_dot,
-                            nueva_ubicacion,
-                            nueva_cantidad,
-                            id_sel,
-                        ),
-                    )
+                    # 1. Descontar las unidades del lote original
+                    cant_restante = cant_max - cant_a_reasignar
+                    if cant_restante > 0:
+                        cursor.execute(
+                            "UPDATE inventario SET cantidad=? WHERE id=?",
+                            (cant_restante, id_sel),
+                        )
+                    else:
+                        cursor.execute(
+                            "DELETE FROM inventario WHERE id=?", (id_sel,)
+                        )
 
-                    # Registrar Movimiento de Auditoría
+                    # 2. Agregar o actualizar el lote con el nuevo DOT
+                    cursor.execute(
+                        "SELECT id, cantidad FROM inventario WHERE medida=? AND dot=? AND ubicacion=?",
+                        (medida_sel, nuevo_dot, nueva_ubicacion),
+                    )
+                    lote_existente = cursor.fetchone()
+
+                    if lote_existente:
+                        nueva_cant_existente = (
+                            lote_existente[1] + cant_a_reasignar
+                        )
+                        cursor.execute(
+                            "UPDATE inventario SET cantidad=? WHERE id=?",
+                            (nueva_cant_existente, lote_existente[0]),
+                        )
+                    else:
+                        cursor.execute(
+                            "INSERT INTO inventario (medida, dot, anio_dot, ubicacion, cantidad) VALUES (?, ?, ?, ?, ?)",
+                            (
+                                medida_sel,
+                                nuevo_dot,
+                                nuevo_anio_dot,
+                                nueva_ubicacion,
+                                cant_a_reasignar,
+                            ),
+                        )
+
+                    # 3. Registrar en Auditoría
                     cursor.execute(
                         """
                         INSERT INTO movimientos (fecha, tipo_movimiento, medida, dot, ubicacion, cantidad, motivo, ref_documental, usuario)
-                        VALUES (?, 'AJUSTE DOT', ?, ?, ?, ?, 'Cambio de DOT / Corrección', ?, ?)
+                        VALUES (?, 'REASIGNACIÓN DOT', ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             fecha_actual,
-                            row_sel["medida"],
+                            medida_sel,
                             nuevo_dot,
                             nueva_ubicacion,
-                            nueva_cantidad,
+                            cant_a_reasignar,
+                            f"Reasignado desde DOT {row_sel['dot']} -> {nuevo_dot}",
                             ref_doc,
                             usuario_actual,
                         ),
@@ -370,7 +395,9 @@ elif opcion == "✏️ Ajustar DOT":
 
                     conn.commit()
                     conn.close()
-                    st.success("✅ DOT y datos actualizados correctamente.")
+                    st.success(
+                        f"✅ Se reasignaron {cant_a_reasignar} unidad(es) al DOT {nuevo_dot}. Quedan {cant_restante} en el DOT anterior."
+                    )
                     st.rerun()
 
 # --- VISTA 3: REGISTRAR INGRESO INDIVIDUAL ---
@@ -471,7 +498,7 @@ elif opcion == "📥 Registrar Ingreso":
                     f"✅ Se registraron {cantidad} unidad(es) correctamente por el usuario '{usuario_actual}'."
                 )
 
-# --- VISTA 4: CARGA MASIVA DE STOCK (EXCEL) ---
+# --- VISTA 4: CARGA MASIVA DE STOCK ---
 elif opcion == "📂 Carga Masiva (Excel)":
     st.header("📂 Carga Masiva de Neumáticos desde Excel")
     st.write(
