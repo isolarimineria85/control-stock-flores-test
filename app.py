@@ -140,18 +140,18 @@ elif st.session_state.rol == "Operador":
         "📦 Visualizar Stock & Alertas",
         "✏️ Ajustar DOT",
         "📥 Registrar Ingreso",
-        "📂 Carga Masiva (Excel)",
+        "📂 Carga Masiva (CSV)",
         "📤 Registrar Egreso",
-        "📋 Historial y Exportación a Excel",
+        "📋 Historial y Exportación (CSV)",
     ]
 else:  # Admin
     opciones_menu = [
         "📦 Visualizar Stock & Alertas",
         "✏️ Ajustar DOT",
         "📥 Registrar Ingreso",
-        "📂 Carga Masiva (Excel)",
+        "📂 Carga Masiva (CSV)",
         "📤 Registrar Egreso",
-        "📋 Historial y Exportación a Excel",
+        "📋 Historial y Exportación (CSV)",
         "⚙️ Gestión de Usuarios",
     ]
 
@@ -159,7 +159,7 @@ opcion = st.sidebar.radio("Menú Principal", opciones_menu)
 
 st.title("🛞 Control de Stock de Neumáticos")
 
-# --- VISTA 1: VISUALIZAR STOCK & ALERTAS (SÓLO EDICIÓN DE DOT) ---
+# --- VISTA 1: VISUALIZAR STOCK & ALERTAS ---
 if opcion == "📦 Visualizar Stock & Alertas":
     st.header("Stock Actual de Neumáticos")
 
@@ -202,7 +202,6 @@ if opcion == "📦 Visualizar Stock & Alertas":
             "Antigüedad (Años)",
         ]
 
-        # SE BLOQUEA TODO SALVO LA COLUMNA "DOT"
         df_editado = st.data_editor(
             df_mostrar,
             disabled=[
@@ -335,7 +334,6 @@ elif opcion == "✏️ Ajustar DOT":
                     conn = obtener_conexion()
                     cursor = conn.cursor()
 
-                    # 1. Descontar las unidades del lote original
                     cant_restante = cant_max - cant_a_reasignar
                     if cant_restante > 0:
                         cursor.execute(
@@ -347,7 +345,6 @@ elif opcion == "✏️ Ajustar DOT":
                             "DELETE FROM inventario WHERE id=?", (id_sel,)
                         )
 
-                    # 2. Agregar o actualizar el lote con el nuevo DOT
                     cursor.execute(
                         "SELECT id, cantidad FROM inventario WHERE medida=? AND dot=? AND ubicacion=?",
                         (medida_sel, nuevo_dot, nueva_ubicacion),
@@ -374,7 +371,6 @@ elif opcion == "✏️ Ajustar DOT":
                             ),
                         )
 
-                    # 3. Registrar en Auditoría
                     cursor.execute(
                         """
                         INSERT INTO movimientos (fecha, tipo_movimiento, medida, dot, ubicacion, cantidad, motivo, ref_documental, usuario)
@@ -497,57 +493,31 @@ elif opcion == "📥 Registrar Ingreso":
                     f"✅ Se registraron {cantidad} unidad(es) correctamente por el usuario '{usuario_actual}'."
                 )
 
-# --- VISTA 4: CARGA MASIVA DE STOCK ---
-elif opcion == "📂 Carga Masiva (Excel)":
-    st.header("📂 Carga Masiva de Neumáticos desde Excel")
+# --- VISTA 4: CARGA MASIVA DE STOCK (CSV NATIVO) ---
+elif opcion == "📂 Carga Masiva (CSV)":
+    st.header("📂 Carga Masiva de Neumáticos")
     st.write(
-        "Subí un archivo `.xlsx` o `.csv` para cargar múltiples cubiertas en simultáneo."
+        "Subí un archivo `.csv` (creado desde Excel) para cargar múltiples cubiertas en simultáneo."
     )
 
-    ejemplo_df = pd.DataFrame(
-        [
-            {
-                "medida": "205/55 R16",
-                "dot": "1222",
-                "ubicacion": "RACK-A1",
-                "cantidad": 10,
-                "ref_documental": "Carga Inicial / Inventario 2026",
-            },
-            {
-                "medida": "175/65 R14",
-                "dot": "0819",
-                "ubicacion": "ESTANTE-B2",
-                "cantidad": 4,
-                "ref_documental": "Carga Inicial / Inventario 2026",
-            },
-        ]
-    )
-
-    output_plantilla = io.BytesIO()
-    with pd.ExcelWriter(output_plantilla, engine="openpyxl") as writer:
-        ejemplo_df.to_excel(writer, sheet_name="Plantilla", index=False)
+    ejemplo_csv = "medida,dot,ubicacion,cantidad,ref_documental\n205/55 R16,1222,RACK-A1,10,Carga Inicial 2026\n175/65 R14,0819,ESTANTE-B2,4,Carga Inicial 2026"
 
     st.download_button(
-        label="📥 Descargar Plantilla de Ejemplo en Excel",
-        data=output_plantilla.getvalue(),
-        file_name="plantilla_carga_masiva_neumaticos.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        label="📥 Descargar Plantilla de Ejemplo (.csv)",
+        data=ejemplo_csv,
+        file_name="plantilla_carga_masiva.csv",
+        mime="text/csv",
     )
 
     st.divider()
 
     archivo_subido = st.file_uploader(
-        "Seleccioná el archivo Excel o CSV para importar:",
-        type=["xlsx", "csv"],
+        "Seleccioná el archivo CSV para importar:", type=["csv"]
     )
 
     if archivo_subido is not None:
         try:
-            if archivo_subido.name.endswith(".csv"):
-                df_cargado = pd.read_csv(archivo_subido, dtype={"dot": str})
-            else:
-                df_cargado = pd.read_excel(archivo_subido, dtype={"dot": str})
-
+            df_cargado = pd.read_csv(archivo_subido, dtype={"dot": str})
             df_cargado.columns = [
                 str(c).strip().lower() for c in df_cargado.columns
             ]
@@ -629,11 +599,10 @@ elif opcion == "📂 Carga Masiva (Excel)":
                     st.success(
                         f"🎉 ¡Éxito! Se importaron {registros_procesados} líneas correctamente."
                     )
+                    st.rerun()
 
         except Exception as e:
-            st.error(
-                f"Error al procesar el archivo. Detalle del problema: {e}"
-            )
+            st.error(f"Error al procesar el archivo. Detalle: {e}")
 
 # --- VISTA 5: REGISTRAR EGRESO ---
 elif opcion == "📤 Registrar Egreso":
@@ -730,8 +699,8 @@ elif opcion == "📤 Registrar Egreso":
                     st.success("✅ Egreso registrado exitosamente.")
                     st.rerun()
 
-# --- VISTA 6: HISTORIAL & EXPORTACIÓN A EXCEL ---
-elif opcion == "📋 Historial y Exportación a Excel":
+# --- VISTA 6: HISTORIAL & EXPORTACIÓN CSV ---
+elif opcion == "📋 Historial y Exportación (CSV)":
     st.header("Historial de Movimientos y Exportación")
 
     conn = obtener_conexion()
@@ -745,52 +714,54 @@ elif opcion == "📋 Historial y Exportación a Excel":
     )
     conn.close()
 
-    st.subheader("📊 Exportación a Excel")
-    if not df_mov.empty or not df_stock_exp.empty:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            if not df_stock_exp.empty:
-                anio_actual = datetime.now().year
-                df_stock_exp["antiguedad_anios"] = (
-                    anio_actual - df_stock_exp["anio_dot"]
-                )
-                df_stock_exp.columns = [
-                    "ID",
-                    "Medida",
-                    "DOT",
-                    "Año DOT",
-                    "Ubicación",
-                    "Cantidad",
-                    "Antigüedad (Años)",
-                ]
-                df_stock_exp.to_excel(
-                    writer, sheet_name="Stock Actual", index=False
-                )
+    st.subheader("📊 Exportación de Datos")
+    col_exp1, col_exp2 = st.columns(2)
 
-            if not df_mov.empty:
-                df_mov_exp = df_mov.copy()
-                df_mov_exp.columns = [
-                    "ID",
-                    "Fecha/Hora",
-                    "Tipo Movimiento",
-                    "Medida",
-                    "DOT",
-                    "Ubicación",
-                    "Cantidad",
-                    "Motivo",
-                    "Ref. Documental",
-                    "Usuario",
-                ]
-                df_mov_exp.to_excel(
-                    writer, sheet_name="Historial Movimientos", index=False
-                )
+    with col_exp1:
+        if not df_stock_exp.empty:
+            anio_actual = datetime.now().year
+            df_stock_exp["antiguedad_anios"] = (
+                anio_actual - df_stock_exp["anio_dot"]
+            )
+            df_stock_exp.columns = [
+                "ID",
+                "Medida",
+                "DOT",
+                "Año DOT",
+                "Ubicación",
+                "Cantidad",
+                "Antigüedad (Años)",
+            ]
+            csv_stock = df_stock_exp.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Descargar Stock Actual (.csv)",
+                data=csv_stock,
+                file_name=f"stock_actual_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+            )
 
-        st.download_button(
-            label="📥 Descargar Reporte Completo en Excel (.xlsx)",
-            data=output.getvalue(),
-            file_name=f"reporte_neumaticos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+    with col_exp2:
+        if not df_mov.empty:
+            df_mov_exp = df_mov.copy()
+            df_mov_exp.columns = [
+                "ID",
+                "Fecha/Hora",
+                "Tipo Movimiento",
+                "Medida",
+                "DOT",
+                "Ubicación",
+                "Cantidad",
+                "Motivo",
+                "Ref. Documental",
+                "Usuario",
+            ]
+            csv_mov = df_mov_exp.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Descargar Historial Movimientos (.csv)",
+                data=csv_mov,
+                file_name=f"historial_movimientos_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+            )
 
     st.divider()
     st.subheader("Tabla de Auditoría de Movimientos")
@@ -811,7 +782,7 @@ elif opcion == "📋 Historial y Exportación a Excel":
         ]
         st.dataframe(df_mov, use_container_width=True)
 
-# --- VISTA 7: GESTIÓN DE USUARIOS (SÓLO ADMIN) ---
+# --- VISTA 7: GESTIÓN DE USUARIOS ---
 elif opcion == "⚙️ Gestión de Usuarios":
     st.header("⚙️ Gestión de Usuarios del Sistema")
 
