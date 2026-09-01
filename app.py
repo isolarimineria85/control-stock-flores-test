@@ -30,7 +30,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS movimientos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fecha TEXT NOT NULL,
-            tipo_movimiento TEXT NOT NULL, -- 'INGRESO' o 'EGRESO'
+            tipo_movimiento TEXT NOT NULL,
             medida TEXT NOT NULL,
             dot TEXT NOT NULL,
             ubicacion TEXT NOT NULL,
@@ -51,7 +51,7 @@ def init_db():
         )
     """)
 
-    # Usuarios por defecto si la base está vacía
+    # Usuarios iniciales por defecto si la base está vacía
     cursor.execute("SELECT COUNT(*) FROM usuarios")
     if cursor.fetchone()[0] == 0:
         # Admin: admin / admin123
@@ -126,7 +126,7 @@ if not st.session_state.autenticado:
                 st.error("Usuario o contraseña incorrectos.")
     st.stop()
 
-# --- BARRA LATERAL (DATOS DE SESIÓN Y MENÚ) ---
+# --- BARRA LATERAL (DATOS DE SESIÓN Y MENÚ POR ROL) ---
 st.sidebar.markdown(f"👤 **Usuario:** {st.session_state.nombre_usuario}")
 st.sidebar.markdown(f"🔑 **Rol:** {st.session_state.rol}")
 
@@ -139,15 +139,24 @@ if st.sidebar.button("Cerrar Sesión"):
 
 st.sidebar.divider()
 
-opciones_menu = [
-    "📦 Visualizar Stock & Alertas",
-    "📥 Registrar Ingreso",
-    "📤 Registrar Egreso",
-    "📋 Historial y Exportación a Excel",
-]
-
-if st.session_state.rol == "Admin":
-    opciones_menu.append("⚙️ Gestión de Usuarios")
+# Permisos según el Rol
+if st.session_state.rol == "Visualizador":
+    opciones_menu = ["📦 Visualizar Stock & Alertas"]
+elif st.session_state.rol == "Operador":
+    opciones_menu = [
+        "📦 Visualizar Stock & Alertas",
+        "📥 Registrar Ingreso",
+        "📤 Registrar Egreso",
+        "📋 Historial y Exportación a Excel",
+    ]
+else:  # Admin
+    opciones_menu = [
+        "📦 Visualizar Stock & Alertas",
+        "📥 Registrar Ingreso",
+        "📤 Registrar Egreso",
+        "📋 Historial y Exportación a Excel",
+        "⚙️ Gestión de Usuarios",
+    ]
 
 opcion = st.sidebar.radio("Menú Principal", opciones_menu)
 
@@ -226,8 +235,17 @@ elif opcion == "📥 Registrar Ingreso":
                 "Referencia Documental",
                 placeholder="Factura A-0001 / Remito 1234",
             )
+            motivo = st.selectbox(
+                "Motivo de Ingreso",
+                [
+                    "Compra Bridgestone",
+                    "Compra importado",
+                    "Ajuste de stock/Alta",
+                    "Recepción CD",
+                    "Otro",
+                ],
+            )
 
-        motivo = "INGRESO POR COMPRA / PROVEEDOR"
         submitted = st.form_submit_button("Guardar Ingreso")
 
         if submitted:
@@ -479,7 +497,9 @@ elif opcion == "⚙️ Gestión de Usuarios":
             nuevo_nombre = st.text_input("Nombre Completo")
         with col2:
             nueva_pass = st.text_input("Contraseña", type="password")
-            nuevo_rol = st.selectbox("Rol", ["Operador", "Admin"])
+            nuevo_rol = st.selectbox(
+                "Rol", ["Visualizador", "Operador", "Admin"]
+            )
 
         btn_crear_user = st.form_submit_button("Guardar Usuario")
         if btn_crear_user:
@@ -506,7 +526,7 @@ elif opcion == "⚙️ Gestión de Usuarios":
                     )
                     conn.commit()
                     st.success(
-                        f"✅ Usuario '{nuevo_user}' creado exitosamente."
+                        f"✅ Usuario '{nuevo_user}' creado exitosamente con el rol '{nuevo_rol}'."
                     )
                 conn.close()
 
