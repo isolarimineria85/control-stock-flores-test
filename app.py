@@ -139,19 +139,21 @@ elif st.session_state.rol == "Operador":
     opciones_menu = [
         "📦 Visualizar Stock & Alertas",
         "✏️ Ajustar DOT",
+        "🔄 Transferir Ubicación",
         "📥 Registrar Ingreso",
-        "📂 Carga Masiva (CSV)",
+        "📂 Carga Masiva (Excel/CSV)",
         "📤 Registrar Egreso",
-        "📋 Historial y Exportación (CSV)",
+        "📋 Historial y Exportación",
     ]
 else:  # Admin
     opciones_menu = [
         "📦 Visualizar Stock & Alertas",
         "✏️ Ajustar DOT",
+        "🔄 Transferir Ubicación",
         "📥 Registrar Ingreso",
-        "📂 Carga Masiva (CSV)",
+        "📂 Carga Masiva (Excel/CSV)",
         "📤 Registrar Egreso",
-        "📋 Historial y Exportación (CSV)",
+        "📋 Historial y Exportación",
         "⚙️ Gestión de Usuarios",
     ]
 
@@ -395,7 +397,153 @@ elif opcion == "✏️ Ajustar DOT":
                     )
                     st.rerun()
 
-# --- VISTA 3: REGISTRAR INGRESO INDIVIDUAL ---
+# --- VISTA 3: TRANSFERIR ENTRE UBICACIONES ---
+elif opcion == "🔄 Transferir Ubicación":
+    st.header("🔄 Transferencia de Neumáticos Entre Ubicaciones")
+    st.write(
+        "Mover stock de una ubicación a otra manteniendo el mismo código DOT."
+    )
+
+    conn = obtener_conexion()
+    df_disponible = pd.read_sql_query(
+        "SELECT id, medida, dot, ubicacion, cantidad FROM inventario WHERE cantidad > 0",
+        conn,
+    )
+    conn.close()
+
+    if df_disponible.empty:
+        st.warning("No hay neumáticos disponibles para mover.")
+    else:
+        df_disponible["item_label"] = df_disponible.apply(
+            lambda x: f"ID: {x['id']} | Medida: {x['medida']} | DOT: {x['dot']} | Origen: {x['ubicacion']} | Disponibles: {x['cantidad']}",
+            axis=1,
+        )
+
+        item_seleccionado = st.selectbox(
+            "Seleccione el lote a transferir:",
+            options=df_disponible["item_label"].tolist(),
+        )
+
+        id_sel = int(item_seleccionado.split("|")[0].replace("ID:", "").strip())
+        row_sel = df_disponible[df_disponible["id"] == id_sel].iloc[0]
+
+        cant_max = int(row_sel["cantidad"])
+
+        with st.form("form_transferencia", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.text_input(
+                    "Medida", value=row_sel["medida"], disabled=True
+                )
+                st.text_input("DOT", value=str(row_sel["dot"]), disabled=True)
+                st.text_input(
+                    "Ubicación Origen",
+                    value=row_sel["ubicacion"],
+                    disabled=True,
+                )
+
+            with col2:
+                cant_transferir = st.number_input(
+                    f"Cantidad a mover (Máx: {cant_max})",
+                    min_value=1,
+                    max_value=cant_max,
+                    value=1,
+                    step=1,
+                )
+                ubicacion_destino = st.text_input(
+                    "Ubicación Destino (ej: RACK-B2)", placeholder="RACK-B2"
+                ).upper()
+                ref_doc = st.text_input(
+                    "Referencia Documental / Orden de Movimiento",
+                    placeholder="Remito Interno #401",
+                )
+
+            btn_transferir = st.form_submit_button("Confirmar Transferencia")
+
+            if btn_transferir:
+                if not ubicacion_destino or not ref_doc:
+                    st.error(
+                        "Debe ingresar la ubicación destino y la referencia documental."
+                    )
+                elif ubicacion_destino == str(row_sel["ubicacion"]):
+                    st.warning(
+                        "La ubicación de destino debe ser diferente a la de origen."
+                    )
+                else:
+                    fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    usuario_actual = st.session_state.usuario
+                    medida_sel = row_sel["medida"]
+                    dot_sel = str(row_sel["dot"])
+                    anio_dot_sel = 2000 + int(dot_sel[2:])
+                    ubic_origen = str(row_sel["ubicacion"])
+
+                    conn = obtener_conexion()
+                    cursor = conn.cursor()
+
+                    # 1. Descontar del origen
+                    cant_restante = cant_max - cant_transferir
+                    if cant_restante > 0:
+                        cursor.execute(
+                            "UPDATE inventario SET cantidad=? WHERE id=?",
+                            (cant_restante, id_sel),
+                        )
+                    else:
+                        cursor.execute(
+                            "DELETE FROM inventario WHERE id=?", (id_sel,)
+                        )
+
+                    # 2. Agregar o sumar al destino
+                    cursor.execute(
+                        "SELECT id, cantidad FROM inventario WHERE medida=? AND dot=? AND ubicacion=?",
+                        (medida_sel, dot_sel, ubicacion_destino),
+                    )
+                    destino_existente = cursor.fetchone()
+
+                    if destino_existente:
+                        nueva_cant = destino_existente[1] + cant_transferir
+                        cursor.execute(
+                            "UPDATE inventario SET cantidad=? WHERE id=?",
+                            (nueva_cant, destino_existente[0]),
+                        )
+                    else:
+                        cursor.execute(
+                            "INSERT INTO inventario (medida, dot, anio_dot, ubicacion, cantidad) VALUES (?, ?, ?, ?, ?)",
+                            (
+                                medida_sel,
+                                dot_sel,
+                                anio_dot_sel,
+                                ubicacion_destino,
+                                cant_transferir,
+                            ),
+                        )
+
+                    # 3. Registrar en Auditoría
+                    cursor.execute(
+                        """
+                        INSERT INTO movimientos (fecha, tipo_movimiento, medida, dot, ubicacion, cantidad, motivo, ref_documental, usuario)
+                        VALUES (?, 'TRANSFERENCIA', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            fecha_actual,
+                            medida_sel,
+                            dot_sel,
+                            f"{ubic_origen} -> {ubicacion_destino}",
+                            cant_transferir,
+                            f"Mapeo de Stock: {ubic_origen} a {ubicacion_destino}",
+                            ref_doc,
+                            usuario_actual,
+                        ),
+                    )
+
+                    conn.commit()
+                    conn.close()
+                    st.success(
+                        f"✅ Se movieron {cant_transferir} unidades a '{ubicacion_destino}' exitosamente."
+                    )
+                    st.rerun()
+
+# --- VISTA 4: REGISTRAR INGRESO INDIVIDUAL ---
 elif opcion == "📥 Registrar Ingreso":
     st.header("Registrar Ingreso Individual")
 
@@ -493,17 +641,17 @@ elif opcion == "📥 Registrar Ingreso":
                     f"✅ Se registraron {cantidad} unidad(es) correctamente por el usuario '{usuario_actual}'."
                 )
 
-# --- VISTA 4: CARGA MASIVA DE STOCK (CSV NATIVO) ---
-elif opcion == "📂 Carga Masiva (CSV)":
+# --- VISTA 5: CARGA MASIVA DE STOCK (EXCEL / CSV) ---
+elif opcion == "📂 Carga Masiva (Excel/CSV)":
     st.header("📂 Carga Masiva de Neumáticos")
     st.write(
-        "Subí un archivo `.csv` (creado desde Excel) para cargar múltiples cubiertas en simultáneo."
+        "Subí un archivo Excel (`.xlsx`) o un archivo `.csv` para cargar múltiples cubiertas en simultáneo."
     )
 
     ejemplo_csv = "medida,dot,ubicacion,cantidad,ref_documental\n205/55 R16,1222,RACK-A1,10,Carga Inicial 2026\n175/65 R14,0819,ESTANTE-B2,4,Carga Inicial 2026"
 
     st.download_button(
-        label="📥 Descargar Plantilla de Ejemplo (.csv)",
+        label="📥 Descargar Plantilla de Ejemplo (.csv / abrible con Excel)",
         data=ejemplo_csv,
         file_name="plantilla_carga_masiva.csv",
         mime="text/csv",
@@ -512,12 +660,17 @@ elif opcion == "📂 Carga Masiva (CSV)":
     st.divider()
 
     archivo_subido = st.file_uploader(
-        "Seleccioná el archivo CSV para importar:", type=["csv"]
+        "Seleccioná el archivo Excel (.xlsx) o CSV (.csv) para importar:",
+        type=["xlsx", "csv"],
     )
 
     if archivo_subido is not None:
         try:
-            df_cargado = pd.read_csv(archivo_subido, dtype={"dot": str})
+            if archivo_subido.name.endswith(".csv"):
+                df_cargado = pd.read_csv(archivo_subido, dtype={"dot": str})
+            else:
+                df_cargado = pd.read_excel(archivo_subido, dtype={"dot": str})
+
             df_cargado.columns = [
                 str(c).strip().lower() for c in df_cargado.columns
             ]
@@ -604,7 +757,7 @@ elif opcion == "📂 Carga Masiva (CSV)":
         except Exception as e:
             st.error(f"Error al procesar el archivo. Detalle: {e}")
 
-# --- VISTA 5: REGISTRAR EGRESO ---
+# --- VISTA 6: REGISTRAR EGRESO ---
 elif opcion == "📤 Registrar Egreso":
     st.header("Registrar Egreso de Neumáticos")
 
@@ -699,8 +852,8 @@ elif opcion == "📤 Registrar Egreso":
                     st.success("✅ Egreso registrado exitosamente.")
                     st.rerun()
 
-# --- VISTA 6: HISTORIAL & EXPORTACIÓN CSV ---
-elif opcion == "📋 Historial y Exportación (CSV)":
+# --- VISTA 7: HISTORIAL Y EXPORTACIÓN ---
+elif opcion == "📋 Historial y Exportación":
     st.header("Historial de Movimientos y Exportación")
 
     conn = obtener_conexion()
@@ -734,7 +887,7 @@ elif opcion == "📋 Historial y Exportación (CSV)":
             ]
             csv_stock = df_stock_exp.to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="📥 Descargar Stock Actual (.csv)",
+                label="📥 Descargar Stock Actual (.csv / Excel)",
                 data=csv_stock,
                 file_name=f"stock_actual_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
@@ -749,7 +902,7 @@ elif opcion == "📋 Historial y Exportación (CSV)":
                 "Tipo Movimiento",
                 "Medida",
                 "DOT",
-                "Ubicación",
+                "Ubicación / Movimiento",
                 "Cantidad",
                 "Motivo",
                 "Ref. Documental",
@@ -757,7 +910,7 @@ elif opcion == "📋 Historial y Exportación (CSV)":
             ]
             csv_mov = df_mov_exp.to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="📥 Descargar Historial Movimientos (.csv)",
+                label="📥 Descargar Historial Movimientos (.csv / Excel)",
                 data=csv_mov,
                 file_name=f"historial_movimientos_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
@@ -774,7 +927,7 @@ elif opcion == "📋 Historial y Exportación (CSV)":
             "Tipo",
             "Medida",
             "DOT",
-            "Ubicación",
+            "Ubicación / Movimiento",
             "Cantidad",
             "Motivo",
             "Ref. Documental",
@@ -782,7 +935,7 @@ elif opcion == "📋 Historial y Exportación (CSV)":
         ]
         st.dataframe(df_mov, use_container_width=True)
 
-# --- VISTA 7: GESTIÓN DE USUARIOS ---
+# --- VISTA 8: GESTIÓN DE USUARIOS ---
 elif opcion == "⚙️ Gestión de Usuarios":
     st.header("⚙️ Gestión de Usuarios del Sistema")
 
